@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
-import { Session } from '@supabase/supabase-js';
+import { db } from '../lib/firebase';
+import { User } from 'firebase/auth';
 import { 
   BarChart, 
   Bar, 
@@ -9,51 +9,56 @@ import {
   CartesianGrid, 
   Tooltip, 
   ResponsiveContainer, 
-  LineChart, 
-  Line,
   AreaChart,
   Area
 } from 'recharts';
-import { format, subDays, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
-import { TrendingUp, Activity, Target } from 'lucide-react';
+import { format } from 'date-fns';
+import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
+import { TrendingUp, Activity, Flame } from 'lucide-react';
 
-export default function Analytics({ session }: { session: Session }) {
+export default function Analytics({ user }: { user: User }) {
   const [workoutData, setWorkoutData] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchAnalytics();
-  }, []);
+  }, [user]);
 
   const fetchAnalytics = async () => {
-    const { data: workouts } = await supabase
-      .from('workouts')
-      .select(`
-        *,
-        exercises (
-          *,
-          sets (*)
-        )
-      `)
-      .order('date', { ascending: true });
+    const q = query(
+      collection(db, 'workouts'),
+      where('user_id', '==', user.uid)
+    );
+    const snap = await getDocs(q);
+    const sortedDocs = [...snap.docs].sort((a, b) => a.data().date.localeCompare(b.data().date));
+    
+    const processed = await Promise.all(sortedDocs.map(async (wDoc) => {
+      const exQ = query(collection(db, 'exercises'), where('workout_id', '==', wDoc.id));
+      const exSnap = await getDocs(exQ);
+      
+      let totalVolume = 0;
+      let totalSets = 0;
+      
+      for (const exDoc of exSnap.docs) {
+        const setQ = query(collection(db, 'sets'), where('exercise_id', '==', exDoc.id));
+        const setSnap = await getDocs(setQ);
+        totalSets += setSnap.docs.length;
+        totalVolume += setSnap.docs.reduce((acc, d) => acc + (d.data().weight * d.data().reps), 0);
+      }
 
-    if (workouts) {
-      const processed = workouts.map(w => ({
-        date: format(new Date(w.date), 'MMM dd'),
-        volume: w.exercises.reduce((acc: number, ex: any) => 
-          acc + ex.sets.reduce((sAcc: number, s: any) => sAcc + (s.weight * s.reps), 0)
-        , 0),
-        sets: w.exercises.reduce((acc: number, ex: any) => acc + ex.sets.length, 0)
-      }));
-      setWorkoutData(processed);
-    }
-    setLoading(false);
+      return {
+        date: format(new Date(wDoc.data().date), 'MMM dd'),
+        volume: totalVolume,
+        sets: totalSets,
+        calories: wDoc.data().calories_burnt || 0
+      };
+    }));
+
+    setWorkoutData(processed);
   };
 
   return (
     <div className="space-y-12">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-        {/* Weekly Volume */}
         <div className="bg-white border border-[#141414] p-8 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
           <div className="flex justify-between items-center mb-8">
             <div>
@@ -66,28 +71,15 @@ export default function Analytics({ session }: { session: Session }) {
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={workoutData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E4E3E0" />
-                <XAxis 
-                  dataKey="date" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{ fontSize: 10, fontFamily: 'monospace', fill: '#141414' }}
-                />
-                <YAxis 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{ fontSize: 10, fontFamily: 'monospace', fill: '#141414' }}
-                />
-                <Tooltip 
-                  cursor={{ fill: '#E4E3E0', opacity: 0.5 }}
-                  contentStyle={{ backgroundColor: '#141414', border: 'none', color: '#E4E3E0', fontFamily: 'monospace', fontSize: '10px' }}
-                />
-                <Bar dataKey="volume" fill="#141414" radius={[2, 2, 0, 0]} />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'monospace' }} />
+                <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} />
+                <Tooltip />
+                <Bar dataKey="volume" fill="#141414" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        {/* Set Intensity */}
         <div className="bg-white border border-[#141414] p-8 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
           <div className="flex justify-between items-center mb-8">
             <div>
@@ -99,67 +91,41 @@ export default function Analytics({ session }: { session: Session }) {
           <div className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={workoutData}>
-                <defs>
-                  <linearGradient id="colorSets" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#141414" stopOpacity={0.1}/>
-                    <stop offset="95%" stopColor="#141414" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E4E3E0" />
-                <XAxis 
-                  dataKey="date" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{ fontSize: 10, fontFamily: 'monospace', fill: '#141414' }}
-                />
-                <YAxis 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{ fontSize: 10, fontFamily: 'monospace', fill: '#141414' }}
-                />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#141414', border: 'none', color: '#E4E3E0', fontFamily: 'monospace', fontSize: '10px' }}
-                />
-                <Area type="monotone" dataKey="sets" stroke="#141414" fillOpacity={1} fill="url(#colorSets)" />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'monospace' }} />
+                <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} />
+                <Tooltip />
+                <Area type="monotone" dataKey="sets" stroke="#141414" fill="#141414" fillOpacity={0.1} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
-      </div>
 
-      {/* Monthly Progress Table */}
-      <div className="bg-white border border-[#141414] p-8 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
-        <h3 className="font-serif italic text-2xl font-bold mb-8">Progressive Overload Log</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-[#141414]">
-                <th className="py-4 font-mono text-[10px] uppercase tracking-widest opacity-40">Date</th>
-                <th className="py-4 font-mono text-[10px] uppercase tracking-widest opacity-40">Workout</th>
-                <th className="py-4 font-mono text-[10px] uppercase tracking-widest opacity-40">Total Volume</th>
-                <th className="py-4 font-mono text-[10px] uppercase tracking-widest opacity-40">Intensity Score</th>
-                <th className="py-4 font-mono text-[10px] uppercase tracking-widest opacity-40">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {workoutData.slice().reverse().map((data, i) => (
-                <tr key={i} className="border-b border-[#E4E3E0] hover:bg-[#E4E3E0]/30 transition-colors group">
-                  <td className="py-4 font-mono text-xs">{data.date}</td>
-                  <td className="py-4 font-bold uppercase tracking-tight text-xs">Session {workoutData.length - i}</td>
-                  <td className="py-4 font-mono text-xs">{data.volume.toLocaleString()} kg</td>
-                  <td className="py-4 font-mono text-xs">{(data.volume / (data.sets || 1)).toFixed(1)} kg/set</td>
-                  <td className="py-4">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2 h-2 rounded-full ${i === 0 ? 'bg-green-500' : 'bg-[#141414]'}`}></div>
-                      <span className="font-mono text-[9px] uppercase tracking-widest">
-                        {i === 0 ? 'Peak Performance' : 'Consistent'}
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="bg-white border border-[#141414] p-8 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] lg:col-span-2">
+          <div className="flex justify-between items-center mb-8">
+            <div>
+              <h3 className="font-serif italic text-2xl font-bold mb-1">Energy Expenditure</h3>
+              <p className="font-mono text-[10px] uppercase tracking-widest opacity-50">Estimated calories burnt per session (kcal)</p>
+            </div>
+            <Flame className="w-6 h-6 text-orange-500 opacity-40" />
+          </div>
+          <div className="h-[300px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={workoutData}>
+                <defs>
+                  <linearGradient id="colorCal" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f97316" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E4E3E0" />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'monospace' }} />
+                <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} />
+                <Tooltip />
+                <Area type="monotone" dataKey="calories" stroke="#f97316" fill="url(#colorCal)" fillOpacity={1} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
     </div>

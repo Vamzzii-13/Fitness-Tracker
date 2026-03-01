@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { supabase } from '../lib/supabase';
-import { Session } from '@supabase/supabase-js';
+import { db } from '../lib/firebase';
+import { User } from 'firebase/auth';
 import { Sparkles, Brain, ArrowRight, RefreshCw } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
+import { collection, query, where, getDocs, limit } from 'firebase/firestore';
 
-export default function AISuggestions({ session }: { session: Session }) {
+export default function AISuggestions({ user }: { user: User }) {
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -12,30 +13,15 @@ export default function AISuggestions({ session }: { session: Session }) {
     setLoading(true);
     try {
       // 1. Fetch user data for context
-      const { data: workouts } = await supabase
-        .from('workouts')
-        .select('*, exercises(*, sets(*))')
-        .limit(5);
+      const workoutQ = query(collection(db, 'workouts'), where('user_id', '==', user.uid), limit(5));
+      const workoutSnap = await getDocs(workoutQ);
       
-      const { data: diet } = await supabase
-        .from('diet_logs')
-        .select('*')
-        .limit(10);
+      const dietQ = query(collection(db, 'diet_logs'), where('user_id', '==', user.uid), limit(10));
+      const dietSnap = await getDocs(dietQ);
 
       const context = {
-        workouts: workouts?.map(w => ({
-          name: w.name,
-          date: w.date,
-          exercises: w.exercises.map((e: any) => ({
-            name: e.name,
-            total_volume: e.sets.reduce((acc: number, s: any) => acc + (s.weight * s.reps), 0)
-          }))
-        })),
-        diet: diet?.map(d => ({
-          meal: d.meal_name,
-          cals: d.calories,
-          protein: d.protein
-        }))
+        workouts: workoutSnap.docs.map(d => d.data()),
+        diet: dietSnap.docs.map(d => d.data())
       };
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });

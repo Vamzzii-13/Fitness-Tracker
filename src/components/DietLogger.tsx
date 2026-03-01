@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
-import { Session } from '@supabase/supabase-js';
-import { Droplets, Utensils, Plus, Trash2, TrendingUp } from 'lucide-react';
+import { db } from '../lib/firebase';
+import { User } from 'firebase/auth';
+import { Droplets, Utensils } from 'lucide-react';
 import { format } from 'date-fns';
-import { WaterIntake, DietLog } from '../types';
+import { collection, addDoc, query, where, getDocs, orderBy } from 'firebase/firestore';
 
-export default function DietLogger({ session }: { session: Session }) {
-  const [waterIntake, setWaterIntake] = useState<WaterIntake[]>([]);
-  const [dietLogs, setDietLogs] = useState<DietLog[]>([]);
+export default function DietLogger({ user }: { user: User }) {
+  const [waterIntake, setWaterIntake] = useState<any[]>([]);
+  const [dietLogs, setDietLogs] = useState<any[]>([]);
   const [waterAmount, setWaterAmount] = useState(250);
   const [newMeal, setNewMeal] = useState({
     meal_name: '',
@@ -19,51 +19,41 @@ export default function DietLogger({ session }: { session: Session }) {
 
   useEffect(() => {
     fetchLogs();
-  }, []);
+  }, [user]);
 
   const fetchLogs = async () => {
     const today = format(new Date(), 'yyyy-MM-dd');
     
-    const { data: waterData } = await supabase
-      .from('water_intake')
-      .select('*')
-      .eq('date', today);
-    
-    const { data: dietData } = await supabase
-      .from('diet_logs')
-      .select('*')
-      .eq('date', today);
+    const waterQ = query(collection(db, 'water_intake'), where('user_id', '==', user.uid), where('date', '==', today));
+    const dietQ = query(collection(db, 'diet_logs'), where('user_id', '==', user.uid), where('date', '==', today));
 
-    if (waterData) setWaterIntake(waterData);
-    if (dietData) setDietLogs(dietData);
+    const waterSnap = await getDocs(waterQ);
+    const dietSnap = await getDocs(dietQ);
+
+    setWaterIntake(waterSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+    setDietLogs(dietSnap.docs.map(d => ({ id: d.id, ...d.data() })));
   };
 
   const logWater = async () => {
-    const { error } = await supabase
-      .from('water_intake')
-      .insert({
-        user_id: session.user.id,
-        amount_ml: waterAmount,
-        date: format(new Date(), 'yyyy-MM-dd')
-      });
-    
-    if (!error) fetchLogs();
+    await addDoc(collection(db, 'water_intake'), {
+      user_id: user.uid,
+      amount_ml: waterAmount,
+      date: format(new Date(), 'yyyy-MM-dd'),
+      created_at: new Date().toISOString()
+    });
+    fetchLogs();
   };
 
   const logMeal = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { error } = await supabase
-      .from('diet_logs')
-      .insert({
-        user_id: session.user.id,
-        ...newMeal,
-        date: format(new Date(), 'yyyy-MM-dd')
-      });
-    
-    if (!error) {
-      setNewMeal({ meal_name: '', calories: 0, protein: 0, carbs: 0, fats: 0 });
-      fetchLogs();
-    }
+    await addDoc(collection(db, 'diet_logs'), {
+      user_id: user.uid,
+      ...newMeal,
+      date: format(new Date(), 'yyyy-MM-dd'),
+      created_at: new Date().toISOString()
+    });
+    setNewMeal({ meal_name: '', calories: 0, protein: 0, carbs: 0, fats: 0 });
+    fetchLogs();
   };
 
   const totalWater = waterIntake.reduce((acc, curr) => acc + curr.amount_ml, 0);
@@ -124,7 +114,7 @@ export default function DietLogger({ session }: { session: Session }) {
                 <span className="font-bold">{log.amount_ml}ml</span>
               </div>
               <span className="font-mono text-[9px] uppercase opacity-40">
-                {format(new Date(), 'HH:mm')}
+                {format(new Date(log.created_at), 'HH:mm')}
               </span>
             </div>
           ))}

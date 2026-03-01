@@ -1,24 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from './lib/supabase';
-import { Session } from '@supabase/supabase-js';
+import { auth, db } from './lib/firebase';
+import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { 
   Activity, 
   BarChart3, 
-  Calendar, 
   Droplets, 
-  Plus, 
   Users, 
   Utensils, 
   LogOut,
-  ChevronRight,
   Sparkles,
   TrendingUp,
-  Dumbbell
+  Dumbbell,
+  Flame,
+  Scale,
+  Footprints
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  LineChart, 
-  Line, 
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -27,8 +25,8 @@ import {
   AreaChart,
   Area
 } from 'recharts';
-import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns';
-import { GoogleGenAI } from "@google/genai";
+import { format, startOfWeek } from 'date-fns';
+import { collection, query, where, getDocs, limit, orderBy, addDoc } from 'firebase/firestore';
 
 // Components
 import Auth from './components/Auth';
@@ -37,23 +35,19 @@ import DietLogger from './components/DietLogger';
 import FriendsList from './components/FriendsList';
 import AISuggestions from './components/AISuggestions';
 import Analytics from './components/Analytics';
+import StepCounter from './components/StepCounter';
 
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
       setLoading(false);
     });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
-    return () => subscription.unsubscribe();
+    return () => unsubscribe();
   }, []);
 
   if (loading) {
@@ -67,7 +61,7 @@ export default function App() {
     );
   }
 
-  if (!session) {
+  if (!user) {
     return <Auth />;
   }
 
@@ -109,7 +103,7 @@ export default function App() {
         </div>
 
         <button 
-          onClick={() => supabase.auth.signOut()}
+          onClick={() => signOut(auth)}
           className="mt-auto flex items-center gap-3 px-4 py-3 text-[#E4E3E0]/40 hover:text-red-400 transition-colors font-mono text-xs uppercase tracking-wider"
         >
           <LogOut className="w-5 h-5" />
@@ -131,7 +125,7 @@ export default function App() {
           <div className="hidden md:flex items-center gap-4">
             <div className="text-right">
               <p className="font-mono text-[10px] uppercase opacity-50">User Session</p>
-              <p className="text-sm font-bold">{session.user.email}</p>
+              <p className="text-sm font-bold">{user.email}</p>
             </div>
           </div>
         </header>
@@ -144,12 +138,12 @@ export default function App() {
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
           >
-            {activeTab === 'dashboard' && <Dashboard session={session} />}
-            {activeTab === 'workouts' && <WorkoutLogger session={session} />}
-            {activeTab === 'diet' && <DietLogger session={session} />}
-            {activeTab === 'friends' && <FriendsList session={session} />}
-            {activeTab === 'analytics' && <Analytics session={session} />}
-            {activeTab === 'ai' && <AISuggestions session={session} />}
+            {activeTab === 'dashboard' && <Dashboard user={user} />}
+            {activeTab === 'workouts' && <WorkoutLogger user={user} />}
+            {activeTab === 'diet' && <DietLogger user={user} />}
+            {activeTab === 'friends' && <FriendsList user={user} />}
+            {activeTab === 'analytics' && <Analytics user={user} />}
+            {activeTab === 'ai' && <AISuggestions user={user} />}
           </motion.div>
         </AnimatePresence>
       </main>
@@ -157,66 +151,124 @@ export default function App() {
   );
 }
 
-function Dashboard({ session }: { session: Session }) {
+function Dashboard({ user }: { user: User }) {
   const [stats, setStats] = useState({
     workoutsThisWeek: 0,
     waterToday: 0,
     caloriesToday: 0,
-    progressiveOverload: 0
+    caloriesBurnt: 0,
+    currentWeight: 0,
+    stepsToday: 0,
+    weightLoggedToday: true // Default to true to avoid flash before check
   });
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [showWeightModal, setShowWeightModal] = useState(false);
+  const [newWeight, setNewWeight] = useState('');
 
   useEffect(() => {
     const fetchDashboardData = async () => {
       const today = format(new Date(), 'yyyy-MM-dd');
       
       // Fetch water today
-      const { data: water } = await supabase
-        .from('water_intake')
-        .select('amount_ml')
-        .eq('date', today);
+      const waterQuery = query(
+        collection(db, 'water_intake'),
+        where('user_id', '==', user.uid),
+        where('date', '==', today)
+      );
+      const waterSnap = await getDocs(waterQuery);
+      const waterTotal = waterSnap.docs.reduce((acc, doc) => acc + doc.data().amount_ml, 0);
       
       // Fetch calories today
-      const { data: diet } = await supabase
-        .from('diet_logs')
-        .select('calories, meal_name')
-        .eq('date', today);
+      const dietQuery = query(
+        collection(db, 'diet_logs'),
+        where('user_id', '==', user.uid),
+        where('date', '==', today)
+      );
+      const dietSnap = await getDocs(dietQuery);
+      const dietTotal = dietSnap.docs.reduce((acc, doc) => acc + (doc.data().calories || 0), 0);
 
       // Fetch workouts this week
       const startOfWk = format(startOfWeek(new Date()), 'yyyy-MM-dd');
-      const { data: workouts } = await supabase
-        .from('workouts')
-        .select('id, name, date')
-        .gte('date', startOfWk);
+      const workoutQuery = query(
+        collection(db, 'workouts'),
+        where('user_id', '==', user.uid)
+      );
+      const workoutSnap = await getDocs(workoutQuery);
+      const workoutsThisWeek = workoutSnap.docs.filter(doc => doc.data().date >= startOfWk);
+      const caloriesBurntToday = workoutSnap.docs
+        .filter(doc => doc.data().date === today)
+        .reduce((acc, doc) => acc + (doc.data().calories_burnt || 0), 0);
+
+      // Fetch latest weight
+      const weightQuery = query(
+        collection(db, 'weight_logs'),
+        where('user_id', '==', user.uid)
+      );
+      const weightSnap = await getDocs(weightQuery);
+      const weightLogs = weightSnap.docs.map(d => d.data());
+      const latestWeight = weightLogs.sort((a, b) => b.date.localeCompare(a.date))[0]?.weight || 0;
+      const loggedToday = weightLogs.some(log => log.date === today);
+
+      // Fetch steps today
+      const stepsQuery = query(
+        collection(db, 'steps'),
+        where('user_id', '==', user.uid),
+        where('date', '==', today),
+        limit(1)
+      );
+      const stepsSnap = await getDocs(stepsQuery);
+      const stepsToday = stepsSnap.empty ? 0 : stepsSnap.docs[0].data().count;
 
       setStats({
-        workoutsThisWeek: workouts?.length || 0,
-        waterToday: water?.reduce((acc, curr) => acc + curr.amount_ml, 0) || 0,
-        caloriesToday: diet?.reduce((acc, curr) => acc + (curr.calories || 0), 0) || 0,
-        progressiveOverload: 5.2 // Mock for now as it requires complex calculation
+        workoutsThisWeek: workoutsThisWeek.length,
+        waterToday: waterTotal,
+        caloriesToday: dietTotal,
+        caloriesBurnt: caloriesBurntToday,
+        currentWeight: latestWeight,
+        stepsToday: stepsToday,
+        weightLoggedToday: loggedToday
       });
 
-      // Combine for recent activity
+      if (!loggedToday) {
+        setShowWeightModal(true);
+      }
+
+      // Recent activity
       const activity = [
-        ...(workouts || []).map(w => ({ type: 'Workout', title: w.name, time: w.date, meta: 'Session logged' })),
-        ...(diet || []).map(d => ({ type: 'Diet', title: d.meal_name, time: today, meta: `${d.calories} kcal` }))
+        ...workoutsThisWeek.map(doc => ({ type: 'Workout', title: doc.data().name, time: doc.data().date, meta: 'Session logged' })),
+        ...dietSnap.docs.map(doc => ({ type: 'Diet', title: doc.data().meal_name, time: today, meta: `${doc.data().calories} kcal` }))
       ].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 5);
 
       setRecentActivity(activity);
     };
 
     fetchDashboardData();
-  }, []);
+  }, [user]);
+
+  const handleLogWeight = async () => {
+    if (!newWeight) return;
+    const today = format(new Date(), 'yyyy-MM-dd');
+    await addDoc(collection(db, 'weight_logs'), {
+      user_id: user.uid,
+      weight: parseFloat(newWeight),
+      date: today,
+      created_at: new Date().toISOString()
+    });
+    setStats(prev => ({ ...prev, currentWeight: parseFloat(newWeight) }));
+    setShowWeightModal(false);
+    setNewWeight('');
+  };
 
   return (
     <div className="space-y-8">
       {/* Quick Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 md:gap-6">
         {[
           { label: 'Workouts (Week)', value: stats.workoutsThisWeek, icon: Dumbbell, unit: 'sessions' },
-          { label: 'Water (Today)', value: stats.waterToday, icon: Droplets, unit: 'ml' },
-          { label: 'Calories (Today)', value: stats.caloriesToday, icon: Utensils, unit: 'kcal' },
-          { label: 'Progressive Overload', value: `+${stats.progressiveOverload}%`, icon: TrendingUp, unit: 'vs last week' },
+          { label: 'Weight', value: stats.currentWeight || '--', icon: Scale, unit: 'kg' },
+          { label: 'Steps', value: stats.stepsToday.toLocaleString(), icon: Footprints, unit: 'steps' },
+          { label: 'Calories In', value: stats.caloriesToday, icon: Utensils, unit: 'kcal' },
+          { label: 'Calories Out', value: stats.caloriesBurnt, icon: Flame, unit: 'kcal' },
         ].map((stat, i) => (
           <div key={i} className="bg-[#141414] text-[#E4E3E0] p-6 border border-[#141414] flex flex-col justify-between group hover:bg-[#E4E3E0] hover:text-[#141414] transition-all duration-300">
             <div className="flex justify-between items-start mb-4">
@@ -229,6 +281,18 @@ function Dashboard({ session }: { session: Session }) {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Step Counter */}
+      <StepCounter user={user} />
+
+      {/* Weight Log Trigger */}
+      <div className="bg-[#141414] text-[#E4E3E0] p-6 border border-[#141414] flex justify-between items-center group cursor-pointer hover:bg-[#E4E3E0] hover:text-[#141414] transition-all duration-300 mb-8" onClick={() => setShowWeightModal(true)}>
+        <div>
+          <h3 className="font-serif italic text-2xl font-bold">Log Body Weight</h3>
+          <p className="font-mono text-[10px] uppercase tracking-widest opacity-60">Track your daily progress</p>
+        </div>
+        <Scale className="w-8 h-8 opacity-40 group-hover:opacity-100" />
       </div>
 
       {/* Main Grid */}
@@ -311,6 +375,54 @@ function Dashboard({ session }: { session: Session }) {
           </button>
         </div>
       </div>
+
+      {/* Weight Modal */}
+      <AnimatePresence>
+        {showWeightModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-[#141414]/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="bg-[#E4E3E0] border border-[#141414] p-8 max-w-md w-full shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
+            >
+              <h3 className="font-serif italic text-3xl font-bold mb-6">Daily Weight</h3>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="font-mono text-[10px] uppercase tracking-widest opacity-60">Current Weight (kg)</label>
+                  <input 
+                    type="number" 
+                    step="0.1"
+                    value={newWeight}
+                    onChange={(e) => setNewWeight(e.target.value)}
+                    placeholder="e.g. 75.5"
+                    className="w-full bg-transparent border-b-2 border-[#141414] py-4 font-serif italic text-4xl focus:outline-none"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex gap-4 pt-4">
+                  <button 
+                    onClick={handleLogWeight}
+                    className="flex-1 bg-[#141414] text-[#E4E3E0] py-4 font-mono text-[10px] uppercase tracking-widest hover:bg-[#141414]/90 transition-all"
+                  >
+                    Save Weight
+                  </button>
+                  <button 
+                    onClick={() => setShowWeightModal(false)}
+                    className="px-8 py-4 border border-[#141414] font-mono text-[10px] uppercase tracking-widest hover:bg-[#141414]/5 transition-all"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

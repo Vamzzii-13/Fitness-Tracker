@@ -1,5 +1,12 @@
 import React, { useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { auth, db, googleProvider } from '../lib/firebase';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signInWithPopup,
+  updateProfile
+} from 'firebase/auth';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { Activity, Mail, Lock, User, ArrowRight } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -18,23 +25,21 @@ export default function Auth() {
 
     try {
       if (isSignUp) {
-        const { data, error } = await supabase.auth.signUp({
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+        
+        // Update profile
+        await updateProfile(user, { displayName: username });
+        
+        // Create user document in Firestore
+        await setDoc(doc(db, 'profiles', user.uid), {
+          uid: user.uid,
+          username,
           email,
-          password,
-          options: {
-            data: {
-              username,
-            }
-          }
+          createdAt: new Date().toISOString()
         });
-        if (error) throw error;
-        alert('Check your email for the confirmation link!');
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
+        await signInWithEmailAndPassword(auth, email, password);
       }
     } catch (err: any) {
       setError(err.message);
@@ -43,33 +48,28 @@ export default function Auth() {
     }
   };
 
-  const [showDebug, setShowDebug] = useState(false);
-
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setError(null);
     try {
-      const redirectUrl = window.location.origin;
-      console.log('Initiating Google Sign-In with redirect to:', redirectUrl);
+      const result = await signInWithPopup(auth, googleProvider);
+      const user = result.user;
       
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: redirectUrl,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
-        },
-      });
-
-      if (error) {
-        console.error('Supabase OAuth Error:', error);
-        throw error;
+      // Check if profile exists, if not create it
+      const profileRef = doc(db, 'profiles', user.uid);
+      const profileSnap = await getDoc(profileRef);
+      
+      if (!profileSnap.exists()) {
+        await setDoc(profileRef, {
+          uid: user.uid,
+          username: user.displayName || user.email?.split('@')[0] || 'Athlete',
+          email: user.email,
+          avatar_url: user.photoURL,
+          createdAt: new Date().toISOString()
+        });
       }
     } catch (err: any) {
-      console.error('Detailed Auth Error:', err);
-      setError(err.message || 'An error occurred during Google Sign-In. Check console for details.');
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -141,24 +141,10 @@ export default function Auth() {
           </div>
 
           {error && (
-            <div className="bg-red-50 p-4 border border-red-200 space-y-2">
+            <div className="bg-red-50 p-4 border border-red-200">
               <p className="font-mono text-[10px] text-red-500 uppercase tracking-tight font-bold">
                 Error: {error}
               </p>
-              <button 
-                type="button"
-                onClick={() => setShowDebug(!showDebug)}
-                className="text-[9px] font-mono uppercase underline opacity-60 hover:opacity-100"
-              >
-                {showDebug ? 'Hide Debug Info' : 'Show Debug Info'}
-              </button>
-              {showDebug && (
-                <div className="pt-2 text-[9px] font-mono opacity-60 space-y-1">
-                  <p>Current Origin: {window.location.origin}</p>
-                  <p>Provider: Google</p>
-                  <p className="text-blue-600">Check Supabase &gt; Auth &gt; URL Configuration</p>
-                </div>
-              )}
             </div>
           )}
 
@@ -219,61 +205,14 @@ export default function Auth() {
       </motion.div>
 
       <div className="mt-12 max-w-2xl text-center">
-        <p className="font-mono text-[10px] uppercase tracking-[0.3em] opacity-30 mb-4">Database Setup Required</p>
-        <div className="bg-[#141414] text-[#E4E3E0] p-4 rounded-sm text-left overflow-x-auto max-h-40 scrollbar-hide">
-          <pre className="text-[9px] font-mono opacity-60">
-{`-- Run this in Supabase SQL Editor:
-create table profiles (
-  id uuid references auth.users on delete cascade primary key,
-  username text unique,
-  full_name text,
-  avatar_url text,
-  updated_at timestamp with time zone
-);
-
-create table workouts (
-  id uuid default gen_random_uuid() primary key,
-  user_id uuid references auth.users on delete cascade not null,
-  name text,
-  date date default current_date not null,
-  created_at timestamp with time zone default now()
-);
-
-create table exercises (
-  id uuid default gen_random_uuid() primary key,
-  workout_id uuid references workouts on delete cascade not null,
-  name text not null,
-  muscle_group text
-);
-
-create table sets (
-  id uuid default gen_random_uuid() primary key,
-  exercise_id uuid references exercises on delete cascade not null,
-  reps integer not null,
-  weight float not null,
-  set_order integer not null
-);
-
-create table water_intake (
-  id uuid default gen_random_uuid() primary key,
-  user_id uuid references auth.users on delete cascade not null,
-  amount_ml integer not null,
-  date date default current_date not null,
-  created_at timestamp with time zone default now()
-);
-
-create table diet_logs (
-  id uuid default gen_random_uuid() primary key,
-  user_id uuid references auth.users on delete cascade not null,
-  meal_name text not null,
-  calories integer,
-  protein float,
-  carbs float,
-  fats float,
-  date date default current_date not null,
-  created_at timestamp with time zone default now()
-);`}
-          </pre>
+        <p className="font-mono text-[10px] uppercase tracking-[0.3em] opacity-30 mb-4">Firebase Setup Required</p>
+        <div className="bg-[#141414] text-[#E4E3E0] p-6 rounded-sm text-left">
+          <p className="text-xs font-mono opacity-80 mb-4">
+            1. Create a Firebase project at console.firebase.google.com<br/>
+            2. Enable Authentication (Email/Password & Google)<br/>
+            3. Enable Firestore Database<br/>
+            4. Add your Firebase config to .env
+          </p>
         </div>
       </div>
     </div>
