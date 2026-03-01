@@ -13,7 +13,8 @@ import {
   Dumbbell,
   Flame,
   Scale,
-  Footprints
+  Footprints,
+  Trophy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -36,6 +37,7 @@ import FriendsList from './components/FriendsList';
 import AISuggestions from './components/AISuggestions';
 import Analytics from './components/Analytics';
 import StepCounter from './components/StepCounter';
+import PersonalRecords from './components/PersonalRecords';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -71,6 +73,7 @@ export default function App() {
     { id: 'diet', label: 'Diet & Water', icon: Utensils },
     { id: 'friends', label: 'Friends', icon: Users },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+    { id: 'prs', label: 'Hall of Fame', icon: Trophy },
     { id: 'ai', label: 'AI Coach', icon: Sparkles },
   ];
 
@@ -143,6 +146,7 @@ export default function App() {
             {activeTab === 'diet' && <DietLogger user={user} />}
             {activeTab === 'friends' && <FriendsList user={user} />}
             {activeTab === 'analytics' && <Analytics user={user} />}
+            {activeTab === 'prs' && <PersonalRecords user={user} />}
             {activeTab === 'ai' && <AISuggestions user={user} />}
           </motion.div>
         </AnimatePresence>
@@ -162,6 +166,7 @@ function Dashboard({ user }: { user: User }) {
     weightLoggedToday: true // Default to true to avoid flash before check
   });
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [topPRs, setTopPRs] = useState<any[]>([]);
   const [showWeightModal, setShowWeightModal] = useState(false);
   const [newWeight, setNewWeight] = useState('');
 
@@ -240,6 +245,28 @@ function Dashboard({ user }: { user: User }) {
       ].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 5);
 
       setRecentActivity(activity);
+
+      // Fetch Top PRs
+      const prMap = new Map<string, any>();
+      for (const workoutDoc of workoutSnap.docs) {
+        const exQ = query(collection(db, 'exercises'), where('workout_id', '==', workoutDoc.id));
+        const exSnap = await getDocs(exQ);
+        for (const exDoc of exSnap.docs) {
+          const exName = exDoc.data().name.trim().toLowerCase();
+          const setQ = query(collection(db, 'sets'), where('exercise_id', '==', exDoc.id));
+          const setSnap = await getDocs(setQ);
+          setSnap.docs.forEach(s => {
+            const weight = s.data().weight || 0;
+            if (!prMap.has(exName) || weight > prMap.get(exName).weight) {
+              prMap.set(exName, { name: exDoc.data().name, weight, reps: s.data().reps, date: workoutDoc.data().date });
+            }
+          });
+        }
+      }
+      const sortedPRs = Array.from(prMap.values())
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, 3);
+      setTopPRs(sortedPRs);
     };
 
     fetchDashboardData();
@@ -373,6 +400,32 @@ function Dashboard({ user }: { user: User }) {
           <button className="w-full mt-8 py-3 border border-[#141414] font-mono text-[10px] uppercase tracking-widest hover:bg-[#141414] hover:text-[#E4E3E0] transition-all">
             View All History
           </button>
+        </div>
+
+        {/* Top PRs */}
+        <div className="bg-[#141414] text-[#E4E3E0] p-8 border border-[#141414] lg:col-span-3">
+          <div className="flex justify-between items-center mb-8">
+            <div>
+              <h3 className="font-serif italic text-2xl font-bold">Top Personal Records</h3>
+              <p className="font-mono text-[10px] uppercase tracking-widest opacity-60">Your heaviest lifts to date</p>
+            </div>
+            <Trophy className="w-8 h-8 text-yellow-500 opacity-40" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {topPRs.map((pr, i) => (
+              <div key={i} className="border-l border-[#E4E3E0]/20 pl-6 py-2">
+                <p className="font-mono text-[9px] uppercase opacity-40 mb-1">{pr.name}</p>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-4xl font-serif italic font-bold">{pr.weight}</span>
+                  <span className="font-mono text-[10px] uppercase opacity-60">kg x {pr.reps}</span>
+                </div>
+                <p className="font-mono text-[8px] uppercase opacity-40 mt-2">{format(new Date(pr.date), 'MMM dd, yyyy')}</p>
+              </div>
+            ))}
+            {topPRs.length === 0 && (
+              <p className="col-span-3 font-mono text-[10px] uppercase opacity-40 text-center py-4">No records yet. Keep pushing.</p>
+            )}
+          </div>
         </div>
       </div>
 
